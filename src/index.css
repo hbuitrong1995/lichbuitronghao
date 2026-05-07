@@ -10,7 +10,13 @@ body {
   background-color: #f9fafb;
 }
 
-/* Custom scrollbar for better look */
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.hide-scrollbar {
+  -ms-overflow-style: none;  /* IE and Edge */
+  scrollbar-width: none;  /* Firefox */
+}
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;

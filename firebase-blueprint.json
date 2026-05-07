@@ -1,0 +1,43 @@
+{
+  "entities": {
+    "Task": {
+      "title": "Task",
+      "description": "User's calendar task",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "date": { "type": "string" },
+        "endDate": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "color": { "type": "string" },
+        "completed": { "type": "boolean" },
+        "createdAt": { "type": "number" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["userId", "date", "title"]
+    },
+    "DayImages": {
+      "title": "DayImages",
+      "description": "User's uploaded images for a specific day",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "date": { "type": "string" },
+        "images": { "type": "array", "items": { "type": "string" } },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["userId", "date", "images"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/tasks/{taskId}": {
+      "schema": { "$ref": "#/entities/Task" },
+      "description": "Tasks created by a user, stored as subcollection"
+    },
+    "/users/{userId}/dayImages/{dayImageId}": {
+      "schema": { "$ref": "#/entities/DayImages" },
+      "description": "Images uploaded by a user for specific dates"
+    }
+  }
+}
