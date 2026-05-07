@@ -132,9 +132,7 @@ export default function App() {
   };
 
   const handleDeleteTask = (id: string) => {
-    if (window.confirm('Bạn có chắc chắn muốn xóa công việc này?')) {
-      setTasks(tasks.filter(t => t.id !== id));
-    }
+    setTasks(tasks.filter(t => t.id !== id));
   };
 
   const handleCancelAdd = () => {
