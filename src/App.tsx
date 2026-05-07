@@ -15,9 +15,6 @@ import { ChevronLeft, ChevronRight, Plus, Calendar, List, LayoutGrid, Trash2, Ed
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { motion, AnimatePresence } from 'motion/react';
-import { db, auth, loginWithGoogle, logout, handleFirestoreError, OperationType } from './firebase';
-import { onAuthStateChanged, User } from 'firebase/auth';
-import { collection, doc, onSnapshot, setDoc, deleteDoc, query, getDocs } from 'firebase/firestore';
 
 // --- Utils ---
 export function cn(...inputs: ClassValue[]) {
@@ -70,58 +67,57 @@ const HOLIDAYS: Record<string, string> = {
 };
 
 export default function App() {
-  const [user, setUser] = useState<User | null>(null);
+  const [isAuthenticated, setIsAuthenticated] = useState(() => {
+    return localStorage.getItem('isLoggedIn') === 'true';
+  });
+  const [loginError, setLoginError] = useState(false);
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  
   const [tasks, setTasks] = useState<Task[]>([]);
   const [images, setImages] = useState<Record<string, string[]>>({});
 
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-    });
-    return () => unsubscribe();
-  }, []);
+  const ADMIN_UID = 'admin_user_001'; // Fixed UID for admin data
+
+  const handleLogin = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (username === 'admin' && password === 'admin') {
+      setIsAuthenticated(true);
+      localStorage.setItem('isLoggedIn', 'true');
+      setLoginError(false);
+    } else {
+      setLoginError(true);
+    }
+  };
+
+  const handleLogout = () => {
+    setIsAuthenticated(false);
+    localStorage.removeItem('isLoggedIn');
+  };
 
   useEffect(() => {
-    if (!user) {
+    if (!isAuthenticated) {
       setTasks([]);
       setImages({});
       return;
     }
 
-    const tasksRef = collection(db, `users/${user.uid}/tasks`);
-    const qTasks = query(tasksRef);
-    
-    const unsubscribeTasks = onSnapshot(qTasks, (snapshot) => {
-      const dbTasks: Task[] = [];
-      snapshot.forEach((doc) => {
-        dbTasks.push({ id: doc.id, ...doc.data() } as Task);
-      });
-      setTasks(dbTasks.sort((a, b) => a.date.localeCompare(b.date)));
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, `users/${user.uid}/tasks`);
-    });
+    const fetchData = async () => {
+      try {
+        const tasksRes = await fetch("/api/tasks");
+        const tasksData = await tasksRes.json();
+        setTasks(tasksData.sort((a: Task, b: Task) => a.date.localeCompare(b.date)));
 
-    const imagesRef = collection(db, `users/${user.uid}/dayImages`);
-    const qImages = query(imagesRef);
-
-    const unsubscribeImages = onSnapshot(qImages, (snapshot) => {
-      const dbImages: Record<string, string[]> = {};
-      snapshot.forEach((doc) => {
-        const data = doc.data();
-        if (data.date && data.images) {
-          dbImages[data.date] = data.images;
-        }
-      });
-      setImages(dbImages);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, `users/${user.uid}/dayImages`);
-    });
-
-    return () => {
-      unsubscribeTasks();
-      unsubscribeImages();
+        const imagesRes = await fetch("/api/images");
+        const imagesData = await imagesRes.json();
+        setImages(imagesData);
+      } catch (err) {
+        console.error("Failed to fetch data", err);
+      }
     };
-  }, [user]);
+
+    fetchData();
+  }, [isAuthenticated]);
 
   const [currentDate, setCurrentDate] = useState(new Date(2026, 4, 1)); // May 2026
   const [viewMode, setViewMode] = useState<ViewMode>('12');
@@ -198,8 +194,8 @@ export default function App() {
     }
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!contextMenu || !e.target.files || e.target.files.length === 0 || !user) return;
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!contextMenu || !e.target.files || e.target.files.length === 0 || !isAuthenticated) return;
     const file = e.target.files[0];
     const reader = new FileReader();
     reader.onload = async (event) => {
@@ -209,15 +205,17 @@ export default function App() {
         const existingImages = images[targetDate] || [];
         const newImages = [...existingImages, base64];
         
+        const updatedImages = { ...images, [targetDate]: newImages };
+        setImages(updatedImages);
+        
         try {
-          await setDoc(doc(db, `users/${user.uid}/dayImages`, targetDate), {
-            userId: user.uid,
-            date: targetDate,
-            images: newImages,
-            updatedAt: Date.now()
+          await fetch("/api/images", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(updatedImages)
           });
         } catch (err) {
-          handleFirestoreError(err, OperationType.WRITE, `users/${user.uid}/dayImages/${targetDate}`);
+          console.error("Failed to save images", err);
         }
       }
     };
@@ -257,38 +255,40 @@ export default function App() {
 
   const handleAddTask = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newTaskTitle.trim() || !newTaskDate || !user) return;
+    if (!newTaskTitle.trim() || !newTaskDate || !isAuthenticated) return;
+    
+    let updatedTasks = [...tasks];
+    if (editingTaskId) {
+      updatedTasks = updatedTasks.map(t => t.id === editingTaskId ? {
+        ...t,
+        date: newTaskDate,
+        endDate: newTaskEndDate || undefined,
+        title: newTaskTitle,
+        description: newTaskDesc,
+        color: newTaskColor,
+      } : t);
+    } else {
+      updatedTasks.push({
+        id: crypto.randomUUID(),
+        date: newTaskDate,
+        endDate: newTaskEndDate || undefined,
+        title: newTaskTitle,
+        description: newTaskDesc,
+        color: newTaskColor,
+        completed: false,
+      });
+    }
+
+    setTasks(updatedTasks.sort((a, b) => a.date.localeCompare(b.date)));
     
     try {
-      if (editingTaskId) {
-        const t = tasks.find(x => x.id === editingTaskId);
-        if (t) {
-          await setDoc(doc(db, `users/${user.uid}/tasks`, editingTaskId), {
-            ...t,
-            date: newTaskDate,
-            endDate: newTaskEndDate || undefined,
-            title: newTaskTitle,
-            description: newTaskDesc,
-            color: newTaskColor,
-            updatedAt: Date.now()
-          });
-        }
-      } else {
-        const newId = crypto.randomUUID();
-        await setDoc(doc(db, `users/${user.uid}/tasks`, newId), {
-          userId: user.uid,
-          date: newTaskDate,
-          endDate: newTaskEndDate || undefined,
-          title: newTaskTitle,
-          description: newTaskDesc,
-          color: newTaskColor,
-          completed: false,
-          createdAt: Date.now(),
-          updatedAt: Date.now()
-        });
-      }
+      await fetch("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updatedTasks)
+      });
     } catch (e) {
-      handleFirestoreError(e, OperationType.WRITE, `users/${user.uid}/tasks`);
+      console.error("Failed to save tasks", e);
     }
     
     setNewTaskTitle('');
@@ -310,26 +310,32 @@ export default function App() {
   };
 
   const handleDeleteTask = async (id: string) => {
-    if (!user) return;
+    if (!isAuthenticated) return;
+    const updatedTasks = tasks.filter(t => t.id !== id);
+    setTasks(updatedTasks);
     try {
-      await deleteDoc(doc(db, `users/${user.uid}/tasks`, id));
+      await fetch("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updatedTasks)
+      });
     } catch (e) {
-      handleFirestoreError(e, OperationType.DELETE, `users/${user.uid}/tasks/${id}`);
+      console.error("Failed to delete task", e);
     }
   };
 
   const handleToggleComplete = async (id: string) => {
-    if (!user) return;
-    const t = tasks.find(x => x.id === id);
-    if (!t) return;
+    if (!isAuthenticated) return;
+    const updatedTasks = tasks.map(t => t.id === id ? { ...t, completed: !t.completed } : t);
+    setTasks(updatedTasks);
     try {
-      await setDoc(doc(db, `users/${user.uid}/tasks`, id), {
-        ...t,
-        completed: !t.completed,
-        updatedAt: Date.now()
+      await fetch("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updatedTasks)
       });
     } catch (e) {
-      handleFirestoreError(e, OperationType.UPDATE, `users/${user.uid}/tasks/${id}`);
+      console.error("Failed to toggle complete", e);
     }
   };
 
@@ -385,25 +391,66 @@ export default function App() {
     document.body.removeChild(link);
   };
 
-  if (!user) {
+  if (!isAuthenticated) {
     return (
-      <div className="flex h-screen bg-gray-50 items-center justify-center p-6 text-gray-900 font-sans">
+      <div className="flex h-screen bg-slate-50 dark:bg-slate-950 items-center justify-center p-6 text-gray-900 font-sans transition-colors duration-300">
         <motion.div 
-          initial={{ opacity: 0, scale: 0.95 }}
-          animate={{ opacity: 1, scale: 1 }}
-          className="bg-white p-10 rounded-[2rem] shadow-[0_8px_30px_rgb(0,0,0,0.06)] border border-gray-100 max-w-sm w-full text-center"
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="bg-white dark:bg-slate-900 p-8 sm:p-10 rounded-[2.5rem] shadow-2xl border border-slate-100 dark:border-slate-800 max-w-md w-full"
         >
-          <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-6">
-            <Calendar className="text-blue-600" size={32} />
+          <div className="w-20 h-20 bg-blue-50 dark:bg-blue-900/20 rounded-3xl flex items-center justify-center mx-auto mb-8 rotate-3 hover:rotate-0 transition-transform duration-500">
+            <Calendar className="text-blue-600 dark:text-blue-400" size={40} />
           </div>
-          <h1 className="text-2xl font-bold mb-3 tracking-tight">Lịch Công Việc</h1>
-          <p className="text-gray-500 mb-8 text-sm leading-relaxed">Đăng nhập tài khoản Google để lưu trữ tự động và an toàn mọi lúc, mọi nơi.</p>
-          <button 
-            onClick={loginWithGoogle}
-            className="w-full bg-blue-600 text-white font-medium py-3.5 px-4 rounded-xl hover:bg-blue-700 hover:shadow-lg hover:-translate-y-0.5 transition-all duration-300"
-          >
-            Đăng nhập với Google
-          </button>
+          
+          <div className="text-center mb-10">
+            <h1 className="text-3xl font-black mb-2 tracking-tighter uppercase dark:text-white">Planner Admin</h1>
+            <p className="text-slate-500 dark:text-slate-400 text-sm font-medium">Hệ thống quản lý công việc nội bộ</p>
+          </div>
+
+          <form onSubmit={handleLogin} className="space-y-5">
+            <div>
+              <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] block mb-2 ml-1">Tài khoản</label>
+              <input 
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder="Nhập 'admin'"
+                className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-2xl px-5 py-4 text-sm focus:ring-2 focus:ring-blue-500 transition-all dark:text-white outline-none"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] block mb-2 ml-1">Mật khẩu</label>
+              <input 
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••"
+                className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-2xl px-5 py-4 text-sm focus:ring-2 focus:ring-blue-500 transition-all dark:text-white outline-none"
+              />
+            </div>
+
+            {loginError && (
+              <motion.p 
+                initial={{ opacity: 0, x: -10 }}
+                animate={{ opacity: 1, x: 0 }}
+                className="text-rose-500 text-xs font-bold text-center"
+              >
+                Sai tài khoản hoặc mật khẩu!
+              </motion.p>
+            )}
+
+            <button 
+              type="submit"
+              className="w-full bg-blue-600 hover:bg-blue-700 text-white font-black uppercase tracking-widest text-xs py-4 px-4 rounded-2xl shadow-xl shadow-blue-500/20 hover:shadow-blue-500/40 transition-all duration-300 active:scale-95"
+            >
+              Đăng nhập hệ thống
+            </button>
+          </form>
+
+          <p className="mt-8 text-center text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+            Protected by internal security
+          </p>
         </motion.div>
       </div>
     );
@@ -449,7 +496,7 @@ export default function App() {
                 {theme === 'light' ? <Moon size={20} /> : <Sun size={20} />}
               </button>
               <button 
-                onClick={logout}
+                onClick={handleLogout}
                 title="Đăng xuất"
                 className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-xl transition-colors"
               >
